@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Admin Assistant: privacy-first RAG demo</title>
+<meta name="description" content="A privacy-first question-answering assistant for public-administration documents, with cited answers, refusals, PII redaction and a built-in evaluation.">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#FBF8F5;--card:#fff;--text:#333;--muted:#6b625c;--accent:#A1674A;--tint:#f4eee8;--border:#e6dfd8;--ok:#2e7d32;--bad:#c62828}
+*{box-sizing:border-box;margin:0}
+body{font:15px/1.55 Poppins,system-ui,sans-serif;background:var(--bg);color:var(--text);padding:1.5rem}
+.wrap{max-width:1100px;margin:0 auto}
+h1{font-size:1.6rem;font-weight:600;color:var(--accent)}
+.sub{color:var(--muted);margin:.4rem 0 1.2rem;max-width:72ch}
+.grid{display:grid;grid-template-columns:1.2fr 1fr;gap:1rem}
+@media(max-width:820px){.grid{grid-template-columns:1fr}body{padding:1rem}}
+.card{background:var(--card);border:1px solid var(--border);border-radius:1rem;padding:1.1rem;min-width:0}
+#log{min-height:260px;max-height:430px;overflow:auto;display:flex;flex-direction:column;gap:.7rem;margin-bottom:.8rem}
+.msg{padding:.7rem .9rem;border-radius:.8rem;max-width:92%}
+.u{align-self:flex-end;background:var(--accent);color:#fff}
+.a{background:var(--tint)}
+.a.refused{border:1px dashed var(--accent)}
+.small{display:block;font-size:.76rem;opacity:.8;margin-top:.3rem}
+form{display:flex;gap:.5rem}
+input,select{font:inherit;padding:.6rem .8rem;border:1px solid var(--border);border-radius:.6rem;width:100%;background:#fff;color:var(--text)}
+button{font:inherit;font-weight:500;border:0;border-radius:999px;padding:.6rem 1.2rem;background:var(--accent);color:#fff;cursor:pointer}
+.chips{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.7rem}
+.chips button{background:none;color:var(--accent);border:1px solid var(--accent);font-size:.78rem;padding:.3rem .7rem}
+.tabs{display:flex;gap:.3rem;margin-bottom:.8rem;flex-wrap:wrap}
+.tabs button{background:none;color:var(--muted);border:1px solid var(--border);font-size:.8rem;padding:.3rem .8rem}
+.tabs button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.pane{display:none;font-size:.85rem}.pane.on{display:block}
+pre{white-space:pre-wrap;background:var(--tint);padding:.7rem;border-radius:.6rem;font:.76rem/1.5 ui-monospace,monospace;overflow:auto;margin-top:.4rem}
+.src{background:var(--tint);padding:.6rem .8rem;border-radius:.6rem;margin-bottom:.6rem}
+.src b{display:block}
+table{width:100%;border-collapse:collapse;font-size:.76rem;margin-top:.4rem}
+td,th{padding:.3rem;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
+.tiles{display:grid;grid-template-columns:repeat(2,1fr);gap:.5rem;margin:.6rem 0}
+.tile{background:var(--tint);border-radius:.6rem;padding:.5rem .7rem}
+.tile b{display:block;font-size:1.25rem;color:var(--accent)}
+.ok{color:var(--ok)}.bad{color:var(--bad)}
+.note{color:var(--muted);font-size:.78rem;margin-top:.6rem}
+label{display:block;font-size:.78rem;color:var(--muted);margin:.6rem 0 .2rem}
+mark{background:#ffe3cf;border-radius:.2rem;padding:0 .15rem}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Admin Assistant</h1>
+  <p class="sub">Ask questions about city service documents. Personal data is removed before anything is processed, every answer cites its source, and questions the documents can't answer are refused instead of guessed.</p>
+  <div class="grid">
+    <section class="card">
+      <div id="log" aria-live="polite"></div>
+      <form id="f">
+        <input id="q" placeholder="e.g. How much does a resident parking permit cost?" autocomplete="off" aria-label="Your question">
+        <button type="submit">Ask</button>
+      </form>
+      <div class="chips" id="chips"></div>
+    </section>
+    <aside class="card">
+      <div class="tabs" id="tabs">
+        <button data-t="src" class="on">Sources</button>
+        <button data-t="mdl">Model input</button>
+        <button data-t="evl">Evaluation</button>
+        <button data-t="set">Settings</button>
+      </div>
+      <div class="pane on" id="p-src"><p class="note">Ask a question to see the passages used.</p></div>
+      <div class="pane" id="p-mdl"><p class="note">This shows exactly what would be sent to a language model, after redaction.</p></div>
+      <div class="pane" id="p-evl"></div>
+      <div class="pane" id="p-set">
+        <label for="prov">Answer engine</label>
+        <select id="prov">
+          <option value="offline">Offline extractive (no LLM, nothing leaves your browser)</option>
+          <option value="ollama">Local LLM via Ollama</option>
+          <option value="openai">OpenAI-compatible API</option>
+        </select>
+        <label for="url">Base URL</label><input id="url" value="http://localhost:11434">
+        <label for="model">Model</label><input id="model" value="llama3.2">
+        <label for="key">API key (kept in this tab's memory only)</label><input id="key" type="password" autocomplete="off">
+        <p class="note">With Ollama, start it with <code>OLLAMA_ORIGINS=*</code> so the browser may call it. OpenAI-compatible URLs end in <code>/v1</code>. If the model call fails, the app falls back to the offline answer.</p>
+      </div>
+    </aside>
+  </div>
+  <p class="note">All documents are fictional (Musterstadt is invented) and written for this demo. Replace them in the <code>DOCS</code> array with real public documents.</p>
+</div>
+<script>
+const DOCS=[
+{id:"residence",title:"Residence registration",text:[
+"Everyone who moves into a flat or house in Musterstadt must register their address within 14 days of moving in. Registration is free of charge.",
+"The documents you need for address registration are a valid passport or ID card and the landlord confirmation form. Appointments can be booked online; walk-in hours are Tuesday and Thursday from 8:00 to 12:00.",
+"If you leave Musterstadt for another country, you must deregister your address at the citizens' office before you go."]},
+{id:"parking",title:"Parking permits",text:[
+"A resident parking permit costs 30.70 euros per year. A replacement for a lost permit costs 10 euros.",
+"It takes up to 10 working days to receive your parking permit. Apply online with your vehicle registration certificate and proof of residence; permits are valid in parking zones A to C."]},
+{id:"waste",title:"Waste collection",text:[
+"Residual waste is collected every two weeks, organic waste every week and paper once a month.",
+"Bulky waste is collected on request: book online. Two bulky waste pickups per year are free of charge, up to 3 cubic metres each.",
+"Hazardous waste such as paint or batteries can be dropped off at the recycling centre, Monday to Saturday."]},
+{id:"business",title:"Business registration",text:[
+"Anyone starting a trade or business in Musterstadt must register it before opening. The registration fee is 26 euros.",
+"Foreign nationals who register a business also need a residence permit that allows self-employment. Bring an identity document as well. The confirmation is issued the same day if all documents are complete."]},
+{id:"data",title:"Data protection notice",text:[
+"Personal data entered in online forms is stored only as long as needed to process the application. The legal basis is Article 6(1)(e) GDPR. Data is not transferred to countries outside the EU.",
+"You have the right to access, correct and delete your data. Contact the data protection officer at dpo@musterstadt.example."]},
+{id:"digital",title:"Citizen account",text:[
+"The citizen account is accessed with the national eID card and requires two-factor authentication.",
+"The maximum upload size for documents is 10 MB per PDF file. Notifications about your application are sent by email."]}
+];
+// [question, expected source id, or null if the documents cannot answer it]
+const TESTS=[
+["How many days after moving do I have to register my address?","residence"],
+["Which documents do I need for address registration?","residence"],
+["How much does a resident parking permit cost?","parking"],
+["How long does it take to get a parking permit?","parking"],
+["How often is paper collected?","waste"],
+["How many bulky waste pickups are free each year?","waste"],
+["What is the fee for registering a business?","business"],
+["What do foreign nationals need to register a business?","business"],
+["What is the legal basis for processing my data?","data"],
+["Who can I contact about data protection?","data"],
+["What is the maximum upload size for documents?","digital"],
+["Do I need two-factor authentication for my account?","digital"],
+["My email is anna.m@example.org. How do I deregister my address?","residence"],
+["Can I get a dog license here?",null],
+["What is the mayor's salary?",null],
+["How do I renew my passport?",null]];
+const PII=[
+{q:"My email is anna.m@example.org and my phone is +49 170 1234567. How do I deregister my address?",s:["anna.m@example.org","+49 170 1234567"]},
+{q:"I'm Anna Müller, born 12.03.1998. How much does a parking permit cost?",s:["Anna Müller","12.03.1998"]}];
+const THRESH=0.6;
+
+/* ---------- privacy: remove personal data before anything else happens ---------- */
+function redact(t){const found=[];
+ const r=(re,tag)=>{t=t.replace(re,m=>{found.push(tag);return"["+tag+"]"})};
+ r(/[\w.+-]+@[\w-]+(\.[\w-]+)+/g,"EMAIL");
+ r(/\b[A-Z]{2}\d{2}[A-Z0-9 ]{11,30}\b/g,"IBAN");
+ r(/\+?\d[\d\s\-()\/]{7,}\d/g,"PHONE");
+ r(/\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b/g,"DATE");
+ t=t.replace(/\b(?:[Mm]y name is|I am|I'm)\s+([A-ZÄÖÜ][a-zäöüß]+(?:\s+[A-ZÄÖÜ][a-zäöüß]+)?)/g,(m,n)=>{found.push("NAME");return m.replace(n,"[NAME]")});
+ return{text:t,found}}
+
+/* ---------- retrieval: BM25 over passages, with an answerability check ---------- */
+const STOP=new Set("the a an of to do does i my me is are how what can for in on at and or it be get there by with from that this who which much many often long must have has need should your you if when where here am was will".split(" "));
+const stem=w=>w.replace(/s$/,"").slice(0,4);
+const toks=s=>(s.toLowerCase().match(/[a-zäöüß0-9]+/g)||[]).filter(w=>w.length>1&&!STOP.has(w)).map(stem);
+const CHUNKS=DOCS.flatMap(d=>d.text.map(t=>({doc:d.id,title:d.title,text:t})));
+const N=CHUNKS.length,df={};
+CHUNKS.forEach(c=>{c.t=toks(c.text);c.tf={};c.t.forEach(w=>c.tf[w]=(c.tf[w]||0)+1);Object.keys(c.tf).forEach(w=>df[w]=(df[w]||0)+1)});
+const AVG=CHUNKS.reduce((a,c)=>a+c.t.length,0)/N;
+function search(q,k=3){
+ const qs=[...new Set(toks(q.replace(/\[[A-Z]+\]/g," ")))];
+ const r=CHUNKS.map(c=>{let s=0,m=0;
+  qs.forEach(w=>{const f=c.tf[w]||0;if(!f)return;m++;
+   const idf=Math.log(1+(N-df[w]+.5)/(df[w]+.5));
+   s+=idf*f*2.5/(f+1.5*(.25+.75*c.t.length/AVG))});
+  return{c,s,cov:qs.length?m/qs.length:0}}).sort((a,b)=>b.s-a.s);
+ return{qs,hits:r.slice(0,k).filter(x=>x.s>0)}}
+const answerable=hits=>!!hits[0]&&hits[0].cov>=THRESH;
+
+/* ---------- answering ---------- */
+function extractive(q,hits){
+ const qs=new Set(toks(q.replace(/\[[A-Z]+\]/g," ")));
+ const ss=hits[0].c.text.split(/(?<=[.!?])\s+/);
+ return ss.map((s,i)=>({s,i,n:toks(s).filter(w=>qs.has(w)).length}))
+  .sort((a,b)=>b.n-a.n).slice(0,2).filter(x=>x.n>0).sort((a,b)=>a.i-b.i).map(x=>x.s).join(" ")}
+const buildPrompt=(q,hits)=>({
+ system:"You answer questions about public-administration documents. Use ONLY the numbered context. Cite sources like [1]. If the answer is not in the context, reply exactly: \"I can't find that in the documents.\"",
+ user:hits.map((h,i)=>"["+(i+1)+"] "+h.c.title+": "+h.c.text).join("\n")+"\n\nQuestion: "+q});
+async function callLLM(p,cfg){
+ const msgs=[{role:"system",content:p.system},{role:"user",content:p.user}];
+ if(cfg.provider==="ollama"){
+  const r=await fetch(cfg.url.replace(/\/$/,"")+"/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:cfg.model,messages:msgs,stream:false,options:{temperature:0}})});
+  if(!r.ok)throw new Error("HTTP "+r.status);return(await r.json()).message.content.trim()}
+ const r=await fetch(cfg.url.replace(/\/$/,"")+"/chat/completions",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+cfg.key},body:JSON.stringify({model:cfg.model,messages:msgs,temperature:0})});
+ if(!r.ok)throw new Error("HTTP "+r.status);return(await r.json()).choices[0].message.content.trim()}
+async function ask(raw,cfg){
+ const R=redact(raw),{hits}=search(R.text);
+ if(!answerable(hits))return{answer:"I can't find that in the documents.",refused:true,R,hits:[],prompt:null};
+ const prompt=buildPrompt(R.text,hits);let answer=null,note="";
+ if(cfg.provider!=="offline"){try{answer=await callLLM(prompt,cfg)}catch(e){note="LLM unavailable ("+e.message+"), showing the offline answer."}}
+ return{answer:answer||extractive(R.text,hits)+" [1]",note,refused:false,R,hits,prompt}}
+
+/* ---------- evaluation: retrieval, refusals and PII leaks ---------- */
+function evaluate(){
+ const rows=TESTS.map(([q,exp])=>{const{hits}=search(redact(q).text),ok=answerable(hits);
+  const top1=ok&&hits[0].c.doc===exp,top3=hits.some(h=>h.c.doc===exp);
+  return{q,exp,ok,top1,top3,pass:exp?top1:!ok}});
+ const A=rows.filter(r=>r.exp),U=rows.filter(r=>!r.exp);
+ const leaks=PII.filter(p=>{const t=redact(p.q).text;return p.s.some(s=>t.includes(s))}).length;
+ return{rows,top1:A.filter(r=>r.top1).length/A.length,top3:A.filter(r=>r.top3).length/A.length,
+  refusal:U.filter(r=>!r.ok).length/U.length,falseRefusal:A.filter(r=>!r.ok).length/A.length,leaks,pii:PII.length}}
+
+if(typeof module!=="undefined")module.exports={search,redact,evaluate,answerable,TESTS,PII,THRESH};
+
+/* ---------- UI ---------- */
+if(typeof document!=="undefined"){
+const $=s=>document.querySelector(s),pc=x=>Math.round(x*100)+"%";
+const esc=s=>s.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const cfg=()=>({provider:$("#prov").value,url:$("#url").value,model:$("#model").value,key:$("#key").value});
+const add=(cls,html)=>{const d=document.createElement("div");d.className="msg "+cls;d.innerHTML=html;$("#log").appendChild(d);$("#log").scrollTop=1e9;return d};
+$("#f").addEventListener("submit",async e=>{
+ e.preventDefault();const raw=$("#q").value.trim();if(!raw)return;$("#q").value="";
+ const R0=redact(raw);
+ add("u",esc(R0.text)+(R0.found.length?'<span class="small">Personal data removed: '+R0.found.join(", ")+"</span>":""));
+ const res=await ask(raw,cfg());
+ const label=res.hits.length?'<span class="small">Source: '+res.hits.map((h,i)=>"["+(i+1)+"] "+esc(h.c.title)).join(" · ")+(res.note?" · "+esc(res.note):"")+"</span>":'<span class="small">Nothing was sent to any model.</span>';
+ add("a"+(res.refused?" refused":""),esc(res.answer)+label);
+ $("#p-src").innerHTML=res.hits.length?res.hits.map((h,i)=>'<div class="src"><b>['+(i+1)+"] "+esc(h.c.title)+"</b>"+esc(h.c.text)+'<div class="note">relevance '+h.s.toFixed(2)+" · term coverage "+pc(h.cov)+"</div></div>").join(""):'<p class="note">No relevant passage found, so the assistant refused instead of guessing.</p>';
+ $("#p-mdl").innerHTML=res.prompt?"<b>System</b><pre>"+esc(res.prompt.system)+"</pre><b>User</b><pre>"+esc(res.prompt.user).replace(/\[(EMAIL|IBAN|PHONE|DATE|NAME)\]/g,"<mark>[$1]</mark>")+'</pre><p class="note">Placeholders in yellow replaced personal data.</p>':'<p class="note">Nothing was sent to a model: no relevant source was found.</p>';
+});
+$("#chips").innerHTML=[0,2,5,12,13].map(i=>'<button type="button" data-i="'+i+'">'+esc(TESTS[i][0].length>44?TESTS[i][0].slice(0,42)+"…":TESTS[i][0])+"</button>").join("");
+$("#chips").addEventListener("click",e=>{const b=e.target.closest("button");if(b){$("#q").value=TESTS[b.dataset.i][0];$("#f").requestSubmit()}});
+let evald=false;
+function showEval(){const r=evaluate(),t=(v,l,good)=>'<div class="tile"><b class="'+(good?"ok":"bad")+'">'+v+"</b>"+l+"</div>";
+ $("#p-evl").innerHTML='<div class="tiles">'+t(pc(r.top1),"right source ranked first",r.top1>=.9)+t(pc(r.top3),"right source in top 3",r.top3>=.9)+t(pc(r.refusal),"unanswerable questions refused",r.refusal===1)+t(pc(r.falseRefusal),"answerable ones wrongly refused",r.falseRefusal===0)+t(r.leaks+" / "+r.pii,"personal data leaks in model input",r.leaks===0)+"</div>"+
+ "<table><tr><th>Question</th><th>Expected</th><th></th></tr>"+r.rows.map(x=>"<tr><td>"+esc(x.q)+"</td><td>"+(x.exp||"refuse")+'</td><td class="'+(x.pass?"ok":"bad")+'">'+(x.pass?"✓":"✗")+"</td></tr>").join("")+"</table>"+
+ '<p class="note">'+r.rows.length+" questions, run in your browser. This tests retrieval, refusals and redaction, which are the same whichever engine writes the final sentence.</p>"}
+$("#tabs").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;
+ document.querySelectorAll("#tabs button").forEach(x=>x.classList.toggle("on",x===b));
+ document.querySelectorAll(".pane").forEach(p=>p.classList.toggle("on",p.id==="p-"+b.dataset.t));
+ if(b.dataset.t==="evl"&&!evald){showEval();evald=true}});
+}
+</script>
+</body>
+</html>
